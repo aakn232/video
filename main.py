@@ -13,10 +13,16 @@ from pathlib import Path
 project_dir = Path(__file__).parent
 sys.path.insert(0, str(project_dir))
 
-# libmpv DLL 경로를 환경변수에 추가
-mpv_dir = project_dir / "mpv"
-if mpv_dir.exists():
-    os.environ["PATH"] = str(mpv_dir) + os.pathsep + os.environ.get("PATH", "")
+# libmpv DLL 경로를 환경변수에 추가 (프로젝트 루트의 libmpv 폴더)
+_project_dir = Path(__file__).parent
+_mpv_dir = _project_dir / "libmpv"
+if _mpv_dir.exists():
+    # PATH에 추가 (python-mpv 내부 체크용)
+    os.environ["PATH"] = str(_mpv_dir) + os.pathsep + os.environ.get("PATH", "")
+    
+    # Python 3.8+ Windows용 DLL 로드 디렉토리 추가
+    if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
+        os.add_dll_directory(str(_mpv_dir))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt

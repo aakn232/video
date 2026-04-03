@@ -1,13 +1,17 @@
-﻿# Python
-__pycache__/
+# Python
+**/__pycache__/
 *.py[cod]
 *.class
 venv/
 .venv/
-
+*.pyc
 # MPV (binary library over 100MB)
 mpv/
+libmpv/
 
 # Samples
 /example_video/
+*.mp4
 
+# Cache
+**/__pycache__/

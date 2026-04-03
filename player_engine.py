@@ -8,11 +8,16 @@ import tempfile
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
-# libmpv DLL 경로를 환경변수에 추가 (프로젝트 루트의 mpv 폴더)
+# libmpv DLL 경로를 환경변수에 추가 (프로젝트 루트의 libmpv 폴더)
 _project_dir = Path(__file__).parent
-_mpv_dir = _project_dir / "mpv"
+_mpv_dir = _project_dir / "libmpv"
 if _mpv_dir.exists():
+    # PATH에 추가 (python-mpv 내부 체크용)
     os.environ["PATH"] = str(_mpv_dir) + os.pathsep + os.environ.get("PATH", "")
+    
+    # Python 3.8+ Windows용 DLL 로드 디렉토리 추가
+    if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
+        os.add_dll_directory(str(_mpv_dir))
 
 import mpv
 
