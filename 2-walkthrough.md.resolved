@@ -1,0 +1,45 @@
+# 홈캠 플레이어 - 시간 갭 처리 구현 완료
+
+## 변경 요약
+
+홈캠 녹화 파일 간 시간 갭(빈 영역)을 감지하고, 실제 시계 시간 기반 타임라인을 제공하도록 4개 파일을 수정했습니다.
+
+## 변경된 파일
+
+### 1. [timeline_manager.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/timeline_manager.py)
+- `FileSegment`, `TimeGap` 데이터클래스 추가
+- `build_time_map(gap_threshold=20.0)`: 유닉스 타임스탬프 파싱, 갭 감지
+- `mpv_to_real_offset()` / `real_offset_to_mpv()`: mpv ↔ 실제 시간 변환
+- `offset_to_clock_time_str()`: 24시간제 시계 시간 문자열 변환
+- `get_gap_ratios()`: 시크바 시각화용 갭 위치 비율
+
+### 2. [seek_bar.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/seek_bar.py)
+- `set_gap_regions()`: 갭 영역 저장
+- `paintEvent()` 오버라이드: 갭 영역을 반투명 빨간색 + 빗금 패턴으로 표시
+- 갭 영역 호버 시 "⚠ 녹화 없음 (X분 Y초)" 툴팁 표시
+
+### 3. [control_bar.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/control_bar.py)
+- `set_real_time_mode()`: 시계 시간 표시 모드 전환
+- `update_position()` / `update_duration()`: 시계 시간 문자열 지원
+
+### 4. [main_window.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/main_window.py)
+- `_setup_real_time_mode()`: 갭 정보를 UI에 전달, 시계 시간 모드 활성화
+- `_on_position_changed()`: mpv 위치 → 실제 시간 변환 후 UI 업데이트
+- `_on_duration_changed()`: 실제 시간 기반 duration 사용
+- `_on_seek()`: 시크바의 실제 시간 → mpv 위치 변환 (갭 자동 스냅)
+
+## 갭 판별 기준
+
+- **threshold = 20초**: 연속 파일 간 예상 간격(~60초) 외에 20초 이상 추가 갭이 있으면 녹화 중단으로 판단
+- 예: 파일 간 실제 차이 85초 → 85 - 60 = 25초 > 20초 → **갭으로 판별**
+
+## 테스트 결과
+
+| 테스트 | 결과 |
+|--------|------|
+| 타임스탬프 파싱 | ✅ 131개 파일 정상 파싱 |
+| 시계 시간 변환 | ✅ 12:00:59 ~ 14:12:11 정확 |
+| 갭 없는 경우 | ✅ 갭 0개로 정상 감지 |
+| 인위적 갭 (10분) | ✅ 12:30~12:40 갭 정확 감지 |
+| 갭 중간 시크 | ✅ 갭 이후 첫 파일(12:40:05)로 자동 스냅 |
+| mpv ↔ 실제 시간 변환 | ✅ 양방향 변환 정확 |

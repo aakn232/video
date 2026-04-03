@@ -1,0 +1,324 @@
+# 홈캠 녹화본 연속 재생 플레이어 (HomeCam Player)
+
+약 1분 단위로 분할 저장된 홈캠 MP4 파일을 **인코딩 없이** 하나의 연속 타임라인으로 재생하는 Windows 데스크톱 플레이어를 개발합니다.
+
+## 핵심 요구사항
+
+| 항목 | 내용 |
+|------|------|
+| 입력 | 폴더 내 다수의 MP4 파일 (24시간 ≈ 약 1440개 파일) |
+| 재생 | 여러 파일을 하나의 연속 영상처럼 끊김 없이 재생 |
+| 시크 | 통합 시크바로 24시간 타임라인의 아무 지점이나 탐색 |
+| 배속 | 1x, 2x, 4x, 8x, 16x 배속 재생 |
+| 플랫폼 | Windows 10/11 |
+
+---
+
+## 기술 스택 선정
+
+### Python + mpv(libmpv) + PyQt6
+
+| 기술 | 역할 | 선정 이유 |
+|------|------|-----------|
+| **mpv (libmpv)** | 비디오 재생 엔진 | `--merge-files` 옵션으로 여러 파일을 하나의 타임라인으로 자동 병합, 100x까지 배속 지원, 뛰어난 코덱 호환성 |
+| **python-mpv** | mpv Python 바인딩 | mpv 모든 기능을 Python에서 제어 가능, wid 옵션으로 Qt 위젯에 임베딩 |
+| **PyQt6** | GUI 프레임워크 | 네이티브 Windows 룩앤필, 커스텀 위젯(시크바 등) 유연하게 제작 가능 |
+
+> [!IMPORTANT]
+> **핵심 전략: mpv의 `--merge-files` 활용**
+> 
+> mpv는 `--merge-files` 옵션을 통해 플레이리스트의 모든 파일을 내부적으로 EDL(Edit Decision List)로 결합하여 **하나의 연속 파일처럼** 취급합니다. 이를 통해:
+> - 시크바가 자동으로 전체 통합 시간을 표시
+> - 파일 경계를 넘나드는 시크(탐색)가 가능
+> - 별도의 타임라인 매핑 로직 불필요
+> - 파일 전환 시 끊김 최소화
+
+---
+
+## User Review Required
+
+> [!WARNING]
+> **libmpv DLL 필요**
+> 
+> Windows에서 python-mpv를 사용하려면 `libmpv-2.dll` 파일이 필요합니다.
+> [mpv Windows 빌드](https://sourceforge.net/projects/mpv-player-windows/)에서 다운로드하여 프로젝트 디렉토리 또는 PATH에 배치해야 합니다.
+> 이 방식이 괜찮으신지, 아니면 다른 설치 방법을 선호하시는지 확인 부탁드립니다.
+
+> [!IMPORTANT]
+> **홈캠 파일 정렬 방식**
+> 
+> 파일명으로 정렬할 예정입니다. 홈캠 파일명이 타임스탬프 기반(예: `20260401_120000.mp4`)인지, 또는 다른 네이밍 규칙을 사용하는지 알려주시면 정렬 로직을 최적화할 수 있습니다.
+> 
+> 샘플 파일명 몇 개를 공유해주시면 도움이 됩니다.
+
+---
+
+## Proposed Changes
+
+### 프로젝트 구조
+
+```
+c:\Users\waati\OneDrive\바탕 화면\dev\video\
+├── main.py                  # 앱 진입점
+├── player_engine.py         # mpv 래퍼 (재생 엔진)
+├── timeline_manager.py      # 파일 스캔, 정렬, 플레이리스트 생성
+├── ui/
+│   ├── __init__.py
+│   ├── main_window.py       # 메인 윈도우 (PyQt6)
+│   ├── control_bar.py       # 하단 컨트롤 바 위젯
+│   ├── seek_bar.py          # 커스텀 시크바 위젯
+│   └── styles.qss           # Qt 스타일시트
+├── resources/
+│   └── icons/               # UI 아이콘 (재생, 일시정지 등)
+├── requirements.txt         # Python 의존성
+└── README.md                # 설치 및 사용 가이드
+```
+
+---
+
+### 1. 재생 엔진 (player_engine.py)
+
+#### [NEW] [player_engine.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/player_engine.py)
+
+mpv를 감싸는 래퍼 클래스. 핵심 기능:
+
+```python
+class PlayerEngine:
+    """mpv 기반 비디오 재생 엔진"""
+    
+    def __init__(self, wid: int):
+        self.player = mpv.MPV(
+            wid=str(wid),
+            merge_files=True,       # 핵심: 파일 병합
+            keep_open=True,         # 마지막 파일 끝에서 멈춤
+            hr_seek='yes',          # 정밀 시크
+            demuxer_max_bytes='150MiB',  # 버퍼 크기
+            cache='yes',            # 캐시 활성화
+        )
+    
+    # 주요 메서드:
+    # - load_playlist(file_list)   : 파일 목록을 플레이리스트로 로드
+    # - play() / pause() / toggle_pause()
+    # - seek(position_seconds)     : 전체 타임라인에서 특정 위치로 이동
+    # - set_speed(multiplier)      : 배속 설정 (1, 2, 4, 8, 16)
+    # - get_position() -> float    : 현재 재생 위치 (초)
+    # - get_duration() -> float    : 전체 타임라인 길이 (초)
+```
+
+**핵심 설계:**
+- `merge_files=True`: mpv가 자동으로 모든 파일을 하나의 타임라인으로 취급
+- 시크바 연동: `observe_property('time-pos', callback)`로 재생 위치 실시간 추적
+- 배속: `self.player.speed = multiplier`로 간단히 변경
+- 이벤트 콜백: 파일 종료, 에러 등을 UI에 전달
+
+---
+
+### 2. 타임라인 매니저 (timeline_manager.py)
+
+#### [NEW] [timeline_manager.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/timeline_manager.py)
+
+MP4 파일 스캔 및 정렬 담당:
+
+```python
+class TimelineManager:
+    """MP4 파일 스캔, 정렬, 플레이리스트 생성"""
+    
+    def scan_directory(self, folder_path: str) -> list[str]:
+        """폴더 내 MP4 파일을 스캔하고 이름순으로 정렬하여 반환"""
+        # - glob으로 *.mp4 파일 수집
+        # - 파일명 기준 자연 정렬 (natural sort)
+        # - 파일 개수 및 예상 시간 계산
+        
+    def get_file_count(self) -> int:
+        """로드된 파일 수 반환"""
+        
+    def get_estimated_duration(self) -> str:
+        """예상 총 재생 시간 (파일 수 × 60초 기준) 반환"""
+```
+
+**설계 포인트:**
+- `merge_files` 기능으로 인해 개별 파일의 duration을 미리 읽을 필요 없음 → 로딩 속도 매우 빠름
+- 자연 정렬(natural sort)로 `file_1.mp4`, `file_2.mp4`, `file_10.mp4` 순서 보장
+- 폴더 구조 지원: 하위 폴더의 파일도 포함 가능 (옵션)
+
+---
+
+### 3. 메인 윈도우 (ui/main_window.py)
+
+#### [NEW] [main_window.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/main_window.py)
+
+```
+┌─────────────────────────────────────────────────────┐
+│  HomeCam Player                          [─] [□] [×] │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│                                                     │
+│              비디오 렌더링 영역                        │
+│              (mpv 임베딩 QFrame)                      │
+│                                                     │
+│                                                     │
+├─────────────────────────────────────────────────────┤
+│  현재파일: cam_20260401_143500.mp4                    │
+├─────────────────────────────────────────────────────┤
+│  00:00:00 ═══════●════════════════════════ 23:59:59  │
+│                                                     │
+│  [◀◀] [▶/❚❚] [▶▶]     1x [2x] [4x] [8x] [16x]    │
+│                                                     │
+│  파일: 1440개 로드됨 | 예상 길이: 24:00:00            │
+└─────────────────────────────────────────────────────┘
+```
+
+**UI 요소:**
+- **비디오 영역**: `QFrame` 위젯에 mpv 임베딩
+- **시크바**: 커스텀 `QSlider` - 전체 타임라인 표시, 클릭으로 해당 위치 이동
+- **시간 표시**: 현재 위치 / 전체 시간 (HH:MM:SS 포맷)
+- **재생 컨트롤**: 재생/일시정지, 10초 앞/뒤로 건너뛰기
+- **배속 버튼**: 1x, 2x, 4x, 8x, 16x 토글 버튼
+- **정보 바**: 현재 재생 중인 파일명, 총 파일 수
+- **키보드 단축키**: Space(재생/일시정지), ←→(10초 이동), ↑↓(배속)
+
+---
+
+### 4. 컨트롤 바 (ui/control_bar.py)
+
+#### [NEW] [control_bar.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/control_bar.py)
+
+하단 컨트롤 영역 위젯:
+- 재생/일시정지 토글 버튼
+- 앞/뒤 건너뛰기 버튼 (10초, 60초)
+- 배속 선택 버튼 그룹
+- 볼륨 슬라이더 (홈캠이므로 음소거 기본)
+- 시그널/슬롯으로 메인 윈도우와 연동
+
+---
+
+### 5. 커스텀 시크바 (ui/seek_bar.py)
+
+#### [NEW] [seek_bar.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/seek_bar.py)
+
+기본 `QSlider`를 확장한 커스텀 위젯:
+- **클릭 시크**: 슬라이더 아무 위치나 클릭하면 해당 위치로 즉시 이동
+- **시간 툴팁**: 마우스 호버 시 해당 위치의 시간을 HH:MM:SS로 표시
+- **시간 눈금**: 1시간 단위 눈금 표시
+- **프로그레스 표시**: 현재 재생 위치를 시각적으로 표시
+- **드래그**: 드래그 중에는 재생 위치 업데이트 일시 중지
+
+---
+
+### 6. 스타일시트 (ui/styles.qss)
+
+#### [NEW] [styles.qss](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/ui/styles.qss)
+
+다크 테마 기반의 모던 UI 스타일:
+- 다크 배경 (`#1a1a2e`, `#16213e`)
+- 액센트 컬러 (`#0f3460`, `#e94560`)
+- 시크바 커스텀 스타일링 (그루브, 핸들, 호버 효과)
+- 버튼 호버/클릭 애니메이션
+
+---
+
+### 7. 앱 진입점 (main.py)
+
+#### [NEW] [main.py](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/main.py)
+
+```python
+# 앱 시작 흐름:
+# 1. QApplication 생성
+# 2. 메인 윈도우 표시
+# 3. 사용자가 폴더 선택 (QFileDialog 또는 드래그 앤 드롭)
+# 4. TimelineManager로 파일 스캔 & 정렬
+# 5. PlayerEngine에 플레이리스트 로드
+# 6. 재생 시작
+```
+
+- 커맨드라인 인자로 폴더 경로를 직접 전달 가능
+- 드래그 앤 드롭으로 폴더 열기 지원
+
+---
+
+### 8. 의존성 (requirements.txt)
+
+#### [NEW] [requirements.txt](file:///c:/Users/waati/OneDrive/바탕%20화면/dev/video/requirements.txt)
+
+```
+PyQt6>=6.6.0
+python-mpv>=1.0.6
+natsort>=8.4.0
+```
+
+추가로 `libmpv-2.dll`이 시스템 PATH 또는 프로젝트 폴더에 필요합니다.
+
+---
+
+## 구현 순서
+
+```mermaid
+graph TD
+    A[1. 환경 설정] --> B[2. 재생 엔진]
+    B --> C[3. 타임라인 매니저]
+    C --> D[4. 메인 윈도우 + 비디오 영역]
+    D --> E[5. 시크바]
+    E --> F[6. 컨트롤 바]
+    F --> G[7. 스타일링]
+    G --> H[8. 통합 테스트]
+```
+
+| 단계 | 작업 | 설명 |
+|------|------|------|
+| 1 | 환경 설정 | Python venv 생성, 의존성 설치, libmpv DLL 배치 |
+| 2 | 재생 엔진 | mpv 래퍼 클래스, merge-files 동작 검증 |
+| 3 | 타임라인 매니저 | 파일 스캔, 자연 정렬 로직 |
+| 4 | 메인 윈도우 | PyQt6 윈도우에 mpv 임베딩, 기본 레이아웃 |
+| 5 | 시크바 | 커스텀 시크바, 시간 표시, 클릭 시크 |
+| 6 | 컨트롤 바 | 재생 컨트롤, 배속 버튼, 키보드 단축키 |
+| 7 | 스타일링 | 다크 테마 QSS 적용, 아이콘 |
+| 8 | 통합 테스트 | 실제 홈캠 파일로 전체 기능 테스트 |
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> 1. **홈캠 파일명 패턴**: 파일명이 어떤 형식인가요? (예: `20260401_120000.mp4`, `cam_001.mp4` 등)
+>    → 정렬 로직에 영향을 줍니다.
+> 
+> 2. **libmpv DLL 설치 방법**: 별도 다운로드가 괜찮은지, 아니면 mpv를 시스템에 이미 설치하셨는지?
+> 
+> 3. **Python 버전**: 현재 사용 중인 Python 버전이 3.10 이상인가요?
+> 
+> 4. **추가 기능 필요 여부**:
+>    - 스크린샷 캡처 기능?
+>    - 특정 시간 북마크 기능?
+>    - 날짜별 폴더 자동 인식?
+
+---
+
+## Verification Plan
+
+### Automated Tests
+
+1. **파일 스캔 & 정렬 테스트**
+   ```bash
+   python -m pytest tests/test_timeline_manager.py
+   ```
+   - 다양한 파일명 패턴에 대한 정렬 검증
+   - 빈 폴더, MP4 외 파일 혼재 등 엣지 케이스
+
+2. **재생 엔진 기본 동작 테스트**
+   - mpv 초기화, 플레이리스트 로드, 속도 변경 검증
+
+### Manual Verification
+
+1. **실제 홈캠 파일 테스트**
+   - 24시간 분량의 실제 파일로 로드 → 재생 → 시크 → 배속 변경 테스트
+   
+2. **시크 정확도 테스트**
+   - 시크바를 여러 위치로 이동 시 올바른 시점으로 점프하는지 확인
+   - 특히 파일 경계 부근의 시크 동작 확인
+
+3. **배속 테스트**
+   - 16x 배속에서 파일 전환이 원활한지 확인 (1분 파일이 3.75초만에 끝남)
+   - 배속 변경 시 즉시 반영되는지 확인
+
+4. **장시간 재생 안정성**
+   - 30분 이상 연속 재생 시 메모리 누수 없는지 확인

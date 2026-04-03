@@ -1,0 +1,8 @@
+# 홈캠 플레이어 - 시간 갭 처리 구현
+
+- [x] timeline_manager.py - FileSegment/TimeGap 데이터클래스 및 시간 매핑 로직 추가
+- [x] seek_bar.py - 갭 영역 시각화 (커스텀 paintEvent)
+- [x] control_bar.py - 시계 시간 표시
+- [x] main_window.py - 갭 매핑 연동, 시간 변환 로직 통합
+- [/] 테스트 - 구문 검증 및 실행 테스트
+

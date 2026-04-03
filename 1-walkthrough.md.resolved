@@ -1,0 +1,98 @@
+# HomeCam Player - 구현 워크스루
+
+## 개요
+
+홈캠 녹화본(1분 단위 MP4 파일)을 인코딩 없이 하나의 연속 타임라인으로 재생하는 Windows 데스크톱 플레이어를 구현했습니다.
+
+## 기술 스택
+
+| 기술 | 용도 |
+|------|------|
+| **Python 3.11** (Anaconda `homecam`) | 런타임 |
+| **mpv (libmpv-2.dll)** | 비디오 재생 엔진 |
+| **python-mpv** | mpv Python 바인딩 |
+| **PyQt6** | GUI 프레임워크 |
+| **natsort** | 자연 정렬 |
+
+## 파일 구조
+
+```
+video/
+├── main.py                    # 앱 진입점
+├── player_engine.py           # mpv 재생 엔진 래퍼
+├── timeline_manager.py        # 파일 스캔, 정렬, 유효성 검사
+├── ui/
+│   ├── __init__.py
+│   ├── main_window.py         # 메인 윈도우
+│   ├── control_bar.py         # 하단 컨트롤 바
+│   ├── seek_bar.py            # 커스텀 시크바
+│   └── styles.qss             # 다크 테마 스타일시트
+├── mpv/
+│   └── libmpv-2.dll           # mpv 동적 라이브러리
+├── requirements.txt
+└── example_video/             # 테스트용 홈캠 파일
+```
+
+## 핵심 기능
+
+### 1. merge_files 통합 타임라인
+- mpv의 `merge_files='yes'` 옵션으로 여러 파일을 하나의 연속 타임라인으로 취급
+- 별도의 타임라인 매핑 로직 없이 mpv가 자동으로 통합 시크 제공
+
+### 2. MP4 유효성 검사
+- 홈캠의 마지막 파일이 녹화 중단으로 moov atom 누락 가능
+- `is_valid_mp4()`: MP4 atom 구조를 파싱하여 moov atom 존재 여부 확인
+- 손상 파일은 자동으로 제외하여 merge_files 에러 방지
+
+### 3. Thread-safe UI 업데이트
+- mpv property observer는 mpv 스레드에서 호출되어 Qt와 충돌
+- QTimer 기반 50ms 폴링으로 GUI 스레드에서 안전하게 프로퍼티 읽기
+
+### 4. 커스텀 시크바
+- 클릭한 위치로 즉시 시크
+- 마우스 호버 시 시간 툴팁 (HH:MM:SS)
+- 드래그 중 재생 위치 업데이트 제어
+
+### 5. 배속 재생
+- 1x, 2x, 4x, 8x, 16x 배속 지원
+- 키보드 ↑↓ 방향키로 빠르게 변경 가능
+
+## 키보드 단축키
+
+| 키 | 기능 |
+|----|------|
+| `Space` | 재생/일시정지 |
+| `←` / `→` | 10초 뒤로/앞으로 |
+| `↑` / `↓` | 배속 올리기/내리기 |
+| `Home` / `End` | 처음/끝으로 이동 |
+| `F` | 전체화면 토글 |
+| `Esc` | 전체화면 해제 |
+| `O` | 폴더 열기 |
+
+## 실행 방법
+
+```bash
+conda activate homecam
+python main.py                    # GUI에서 폴더 선택
+python main.py "example_video"    # 지정 폴더 바로 로드
+```
+
+## 해결한 주요 버그
+
+### 1. MpvEvent 호환성
+`event_callback`의 이벤트 객체가 딕셔너리가 아닌 MpvEvent 타입 → `hasattr()` 방식으로 수정
+
+### 2. 상대 경로 문제
+플레이리스트 파일이 temp 폴더에 생성되어 상대 경로 해석 실패 → 절대 경로 사용
+
+### 3. 손상 파일 필터링
+홈캠 녹화 중단 시 생성되는 불완전한 MP4(moov atom 없음) → 자동 필터링
+
+### 4. Thread Safety
+mpv observer 콜백이 비-GUI 스레드에서 Qt 시그널 emit → QTimer 폴링으로 전환
+
+## 테스트 결과
+
+- ✅ example_video 폴더 (3개 하위폴더, ~180개 파일) 정상 재생
+- ✅ 시크바, 배속, 재생/일시정지 동작 확인
+- ✅ 손상 파일 자동 제외 확인 (에러 없이 로드)

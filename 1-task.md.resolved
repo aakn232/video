@@ -1,0 +1,27 @@
+# HomeCam Player 구현 태스크
+
+## 환경 설정
+- [x] Anaconda 가상환경 `homecam` 생성 (Python 3.11)
+- [x] PyQt6, python-mpv, natsort 설치
+- [x] libmpv DLL 다운로드 및 배치 (shinchiro/mpv-winbuild-cmake)
+- [x] 7-Zip 설치 (7z 압축 해제용)
+
+## 코드 구현
+- [x] `timeline_manager.py` - 파일 스캔 & 정렬 + MP4 유효성 검사
+- [x] `player_engine.py` - mpv 재생 엔진 래퍼 (QTimer 폴링 방식)
+- [x] `ui/seek_bar.py` - 커스텀 시크바
+- [x] `ui/control_bar.py` - 컨트롤 바
+- [x] `ui/main_window.py` - 메인 윈도우
+- [x] `ui/styles.qss` - 다크 테마 스타일
+- [x] `main.py` - 앱 진입점
+- [x] `requirements.txt` - 의존성 파일
+
+## 버그 수정
+- [x] MpvEvent 객체의 .get() 메서드 오류 수정
+- [x] 상대 경로 → 절대 경로 사용 (플레이리스트)
+- [x] 손상된 MP4 파일 자동 필터링 (moov atom 검사)
+- [x] mpv 스레드 → Qt GUI 스레드 안전성 (QTimer 폴링 방식)
+- [x] KeyboardInterrupt 예외 처리
+
+## 테스트
+- [x] example_video 폴더로 정상 동작 확인 (에러 없이 재생)
