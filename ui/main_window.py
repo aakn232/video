@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
             est_duration = self._timeline_mgr.get_estimated_duration_str()
             skipped = self._timeline_mgr.get_skipped_files()
 
-            skip_msg = f" (손상 {len(skipped)}개 제외)" if skipped else ""
+            skip_msg = f" (손상 {len(skipped)}개)" if skipped else ""
             self._status_bar.showMessage(
                 f"{file_count}개 파일 로드됨{skip_msg} | 예상 길이: {est_duration}"
             )

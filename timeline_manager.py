@@ -194,6 +194,7 @@ class TimelineManager:
     def build_time_map(self, gap_threshold: float = 20.0) -> bool:
         """
         파일명의 유닉스 타임스탬프를 기반으로 시간 매핑 테이블을 생성하고 갭을 감지.
+        손상된 파일(skipped_files)도 타임라인 범위에 포함하며 갭으로 표시합니다.
 
         Args:
             gap_threshold: 연속 파일 간 예상 간격(~60초)을 제외한 추가 갭이
@@ -201,56 +202,81 @@ class TimelineManager:
         Returns:
             bool: 시간 매핑 테이블 생성 성공 여부
         """
-        if not self._files:
+        all_candidate_files = []
+        
+        # 유효한 파일들 정보 수집
+        for fpath in self._files:
+            info = self.get_file_info(fpath)
+            ts = info.get('timestamp')
+            if ts and ts.isdigit():
+                all_candidate_files.append({
+                    'path': fpath,
+                    'ts': int(ts),
+                    'valid': True
+                })
+            else:
+                return False
+
+        # 손상된 파일들 정보 수집
+        for fpath in self._skipped_files:
+            info = self.get_file_info(fpath)
+            ts = info.get('timestamp')
+            if ts and ts.isdigit():
+                all_candidate_files.append({
+                    'path': fpath,
+                    'ts': int(ts),
+                    'valid': False
+                })
+
+        if not all_candidate_files:
             return False
 
+        # 타임스탬프 순으로 정렬
+        all_candidate_files.sort(key=lambda x: x['ts'])
+        
         self._segments = []
         self._gaps = []
-        self._has_time_map = False
-
-        # 파일별 타임스탬프 추출
-        file_timestamps: list[tuple[int, str, int]] = []
-        for i, fpath in enumerate(self._files):
-            info = self.get_file_info(fpath)
-            ts_str = info.get('timestamp', '')
-            if ts_str and ts_str.isdigit():
-                file_timestamps.append((i, fpath, int(ts_str)))
-            else:
-                return False  # 타임스탬프 없는 파일 → 시간 매핑 불가
-
-        if not file_timestamps:
-            return False
-
-        file_timestamps.sort(key=lambda x: x[2])
-        self._first_timestamp = file_timestamps[0][2]
-
-        # 세그먼트 생성
-        for idx, (file_idx, fpath, ts) in enumerate(file_timestamps):
-            self._segments.append(FileSegment(
-                file_path=fpath,
-                unix_timestamp=ts,
-                real_offset=float(ts - self._first_timestamp),
-                file_index=idx,
-            ))
-
-        # 갭 감지: (다음 파일 시작 - 현재 파일 시작 - 예상 파일 길이) > threshold
-        for i in range(len(self._segments) - 1):
-            curr = self._segments[i]
-            next_seg = self._segments[i + 1]
-            time_diff = next_seg.unix_timestamp - curr.unix_timestamp
-            gap_extra = time_diff - self.ESTIMATED_FILE_DURATION
-
-            if gap_extra > gap_threshold:
-                gap_start = curr.real_offset + self.ESTIMATED_FILE_DURATION
-                gap_end = next_seg.real_offset
+        self._first_timestamp = all_candidate_files[0]['ts']
+        
+        valid_file_idx = 0
+        prev_end_offset = 0.0
+        
+        for f_info in all_candidate_files:
+            fpath = f_info['path']
+            ts = f_info['ts']
+            is_valid = f_info['valid']
+            
+            real_start = float(ts - self._first_timestamp)
+            
+            # 이전 파일 끝과 현재 파일 시작 사이에 갭이 있는지 확인
+            if real_start > prev_end_offset + gap_threshold:
                 self._gaps.append(TimeGap(
-                    real_start=gap_start,
-                    real_end=gap_end,
-                    duration=gap_end - gap_start,
+                    real_start=prev_end_offset,
+                    real_end=real_start,
+                    duration=real_start - prev_end_offset
                 ))
+            
+            if is_valid:
+                # 유효한 파일: 세그먼트 추가
+                self._segments.append(FileSegment(
+                    file_path=fpath,
+                    unix_timestamp=ts,
+                    real_offset=real_start,
+                    file_index=valid_file_idx
+                ))
+                valid_file_idx += 1
+                prev_end_offset = real_start + self.ESTIMATED_FILE_DURATION
+            else:
+                # 손상된 파일: 갭으로 취급하여 추가
+                gap_end = real_start + self.ESTIMATED_FILE_DURATION
+                self._gaps.append(TimeGap(
+                    real_start=real_start,
+                    real_end=gap_end,
+                    duration=self.ESTIMATED_FILE_DURATION
+                ))
+                prev_end_offset = gap_end
 
-        last_seg = self._segments[-1]
-        self._real_total_duration = last_seg.real_offset + self.ESTIMATED_FILE_DURATION
+        self._real_total_duration = prev_end_offset
         self._has_time_map = True
         return True
 
