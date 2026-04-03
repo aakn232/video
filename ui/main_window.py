@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
         self._mpv_total_duration = 0.0  # mpv가 보고하는 전체 재생 길이
         self._settings = QSettings("HomeCamPlayer", "Settings")
         self._first_show = True
+        self._was_playing_before_drag = False
 
         self._setup_ui()
         self._load_stylesheet()
@@ -107,6 +108,12 @@ class MainWindow(QMainWindow):
         self._control_bar.volume_changed.connect(self._on_volume_changed)
         self._control_bar.show_corrupted_clicked.connect(self._show_corrupted_files_dialog)
         self._main_layout.addWidget(self._control_bar)
+        
+        # 드래그 시그널 연결
+        seek_bar = self._control_bar.get_seek_bar()
+        seek_bar.drag_started.connect(self._on_seek_drag_started)
+        seek_bar.drag_finished.connect(self._on_seek_drag_finished)
+        
         self._control_bar.hide()
 
         # 상태바
@@ -377,6 +384,20 @@ class MainWindow(QMainWindow):
         self._settings.setValue("volume", volume)
         if self._player:
             self._player.set_volume(volume)
+
+    def _on_seek_drag_started(self):
+        """드래그 시작 시 재생 상태 저장 및 일시정지"""
+        if self._player and self._is_loaded:
+            self._was_playing_before_drag = not self._player.is_paused()
+            if self._was_playing_before_drag:
+                self._player.pause()
+                self._control_bar.update_play_button(False)
+
+    def _on_seek_drag_finished(self):
+        """드래그 완료 시 무조건 재생 시작"""
+        if self._player and self._is_loaded:
+            self._player.play()
+            self._control_bar.update_play_button(True)
 
     def _show_corrupted_files_dialog(self):
         """손상된 파일 목록을 보여주는 다이얼로그"""

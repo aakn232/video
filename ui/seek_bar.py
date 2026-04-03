@@ -18,6 +18,8 @@ class SeekBar(QSlider):
     """
 
     seek_requested = pyqtSignal(float)  # 시크 요청 (초 단위)
+    drag_started = pyqtSignal()         # 드래그 시작
+    drag_finished = pyqtSignal()        # 드래그 종료
 
     def __init__(self, parent=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
@@ -77,6 +79,7 @@ class SeekBar(QSlider):
     def mousePressEvent(self, event: QMouseEvent):
         """클릭한 위치로 즉시 이동"""
         if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_started.emit()
             value = self._pos_to_value(int(event.position().x()))
             self.setValue(value)
             self._is_dragging = True
@@ -117,6 +120,8 @@ class SeekBar(QSlider):
         if self._is_dragging:
             value = self._pos_to_value(int(event.position().x()))
             self.setValue(value)
+            seconds = self._value_to_seconds(value)
+            self.seek_requested.emit(seconds)
 
         super().mouseMoveEvent(event)
 
@@ -126,19 +131,23 @@ class SeekBar(QSlider):
             self._is_dragging = False
             seconds = self._value_to_seconds(self.value())
             self.seek_requested.emit(seconds)
+            self.drag_finished.emit()
         super().mouseReleaseEvent(event)
 
     def _on_slider_pressed(self):
         self._is_dragging = True
+        self.drag_started.emit()
 
     def _on_slider_released(self):
         self._is_dragging = False
         seconds = self._value_to_seconds(self.value())
         self.seek_requested.emit(seconds)
-
+        self.drag_finished.emit()
     def _on_slider_moved(self, value: int):
-        """드래그 중 시간 표시 업데이트"""
-        pass
+        """드래그 중 실시간 영상 탐색"""
+        if self._is_dragging:
+            seconds = self._value_to_seconds(value)
+            self.seek_requested.emit(seconds)
 
     def is_dragging(self) -> bool:
         return self._is_dragging
