@@ -81,26 +81,31 @@ class ControlBar(QWidget):
         self._btn_skip_back_60 = QPushButton("⏪ 60s")
         self._btn_skip_back_60.setObjectName("controlBtn")
         self._btn_skip_back_60.setFixedSize(70, 36)
+        self._btn_skip_back_60.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_skip_back_60.clicked.connect(lambda: self.skip_backward_clicked.emit(60))
 
         self._btn_skip_back = QPushButton("◀ 10s")
         self._btn_skip_back.setObjectName("controlBtn")
         self._btn_skip_back.setFixedSize(65, 36)
+        self._btn_skip_back.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_skip_back.clicked.connect(lambda: self.skip_backward_clicked.emit(10))
 
         self._btn_play_pause = QPushButton("▶")
         self._btn_play_pause.setObjectName("playBtn")
         self._btn_play_pause.setFixedSize(50, 50)
+        self._btn_play_pause.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_play_pause.clicked.connect(self.play_pause_clicked.emit)
 
         self._btn_skip_fwd = QPushButton("10s ▶")
         self._btn_skip_fwd.setObjectName("controlBtn")
         self._btn_skip_fwd.setFixedSize(65, 36)
+        self._btn_skip_fwd.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_skip_fwd.clicked.connect(lambda: self.skip_forward_clicked.emit(10))
 
         self._btn_skip_fwd_60 = QPushButton("60s ⏩")
         self._btn_skip_fwd_60.setObjectName("controlBtn")
         self._btn_skip_fwd_60.setFixedSize(70, 36)
+        self._btn_skip_fwd_60.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_skip_fwd_60.clicked.connect(lambda: self.skip_forward_clicked.emit(60))
 
         play_controls.addWidget(self._btn_skip_back_60)
@@ -126,6 +131,7 @@ class ControlBar(QWidget):
             btn.setObjectName("speedBtn")
             btn.setFixedSize(48, 32)
             btn.setCheckable(True)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             if speed == 1:
                 btn.setChecked(True)
             btn.clicked.connect(lambda checked, s=speed: self._on_speed_clicked(s))
@@ -172,12 +178,19 @@ class ControlBar(QWidget):
         self._volume_slider.setRange(0, 100)
         self._volume_slider.setValue(50)
         self._volume_slider.setFixedWidth(100)
+        self._volume_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._volume_slider.valueChanged.connect(self.volume_changed.emit)
         volume_layout.addWidget(self._volume_slider)
 
         controls_layout.addLayout(volume_layout)
 
         main_layout.addLayout(controls_layout)
+
+    def set_volume(self, volume: int):
+        """외부에서 볼륨 슬라이더 설정 (초기 로드 등)"""
+        self._volume_slider.blockSignals(True)
+        self._volume_slider.setValue(volume)
+        self._volume_slider.blockSignals(False)
 
     def _on_speed_clicked(self, speed: float):
         """배속 버튼 클릭"""

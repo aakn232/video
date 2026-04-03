@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
     QFrame, QLabel, QPushButton, QFileDialog, QStatusBar,
     QSizePolicy, QApplication, QDialog, QListWidget
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QFont
+from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QFont, QShowEvent, QShortcut, QKeySequence
 
 from player_engine import PlayerEngine
 from timeline_manager import TimelineManager, format_time
@@ -31,6 +31,8 @@ class MainWindow(QMainWindow):
         self._player: PlayerEngine = None
         self._is_loaded = False
         self._mpv_total_duration = 0.0  # mpv가 보고하는 전체 재생 길이
+        self._settings = QSettings("HomeCamPlayer", "Settings")
+        self._first_show = True
 
         self._setup_ui()
         self._load_stylesheet()
@@ -50,18 +52,15 @@ class MainWindow(QMainWindow):
         self._main_layout.setContentsMargins(0, 0, 0, 0)
         self._main_layout.setSpacing(0)
 
-        # 비디오 프레임
+        # 비디오 프레임 (배경을 검은색으로 유지하여 플레이어 느낌 강조)
         self._video_frame = QFrame()
         self._video_frame.setObjectName("videoFrame")
         self._video_frame.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding
         )
-        self._video_frame.setMinimumHeight(300)
+        self._video_frame.setMinimumHeight(400)
         self._main_layout.addWidget(self._video_frame, 1)
-
-        # 초기 화면: 폴더 열기 안내
-        self._setup_welcome_screen()
 
         # 정보 바
         self._info_bar = QWidget()
@@ -69,19 +68,34 @@ class MainWindow(QMainWindow):
         info_layout = QHBoxLayout(self._info_bar)
         info_layout.setContentsMargins(16, 4, 16, 4)
 
-        self._file_info_label = QLabel("")
-        self._file_info_label.setObjectName("fileInfoLabel")
+        # 상단 폴더 열기 버튼
+        self._top_open_btn = QPushButton("📂 폴더 열기")
+        self._top_open_btn.setObjectName("topOpenBtn")
+        self._top_open_btn.clicked.connect(self._on_open_folder)
+        self._top_open_btn.setStyleSheet("""
+            QPushButton#topOpenBtn {
+                background-color: #238636;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton#topOpenBtn:hover {
+                background-color: #2ea043;
+            }
+        """)
+        info_layout.addWidget(self._top_open_btn)
 
         self._stats_label = QLabel("")
         self._stats_label.setObjectName("infoLabel")
         self._stats_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
-        info_layout.addWidget(self._file_info_label)
         info_layout.addStretch()
         info_layout.addWidget(self._stats_label)
 
         self._main_layout.addWidget(self._info_bar)
-        self._info_bar.hide()
 
         # 컨트롤 바
         self._control_bar = ControlBar()
@@ -108,44 +122,6 @@ class MainWindow(QMainWindow):
         self._update_timer.setInterval(100)
         self._update_timer.timeout.connect(self._update_ui)
 
-    def _setup_welcome_screen(self):
-        """초기 환영 화면 설정"""
-        self._welcome_widget = QWidget(self._video_frame)
-        self._welcome_widget.setObjectName("dropZone")
-        welcome_layout = QVBoxLayout(self._welcome_widget)
-        welcome_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome_layout.setSpacing(20)
-
-        # 아이콘
-        icon_label = QLabel("📹")
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setFont(QFont("Segoe UI", 48))
-        welcome_layout.addWidget(icon_label)
-
-        # 타이틀
-        title_label = QLabel("HomeCam Player")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet("color: #c9d1d9; font-size: 28px; font-weight: bold; font-family: 'Segoe UI';")
-        welcome_layout.addWidget(title_label)
-
-        # 설명
-        desc_label = QLabel("홈캠 녹화 파일을 연속으로 재생합니다")
-        desc_label.setObjectName("dropLabel")
-        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome_layout.addWidget(desc_label)
-
-        # 폴더 열기 버튼
-        open_btn = QPushButton("📂  폴더 열기")
-        open_btn.setObjectName("openFolderBtn")
-        open_btn.clicked.connect(self._on_open_folder)
-        welcome_layout.addWidget(open_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # 드래그 앤 드롭 안내
-        drop_label = QLabel("또는 폴더를 여기로 드래그 앤 드롭")
-        drop_label.setObjectName("dropLabel")
-        drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome_layout.addWidget(drop_label)
-
     def _load_stylesheet(self):
         """QSS 스타일시트 로드"""
         qss_path = Path(__file__).parent / "styles.qss"
@@ -154,18 +130,76 @@ class MainWindow(QMainWindow):
                 self.setStyleSheet(f.read())
 
     def _setup_shortcuts(self):
-        """키보드 단축키는 keyPressEvent에서 처리"""
-        pass
+        """전역 키보드 단축키 설정 (포커스 우회)"""
+        self._shortcuts = []
+
+        # 스페이스바 (재생/일시정지)
+        sc_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        sc_space.activated.connect(self._control_bar._btn_play_pause.animateClick)
+        self._shortcuts.append(sc_space)
+
+        # 좌우 방향키 (10초 건너뛰기)
+        sc_left = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
+        sc_left.activated.connect(self._control_bar._btn_skip_back.animateClick)
+        self._shortcuts.append(sc_left)
+
+        sc_right = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+        sc_right.activated.connect(self._control_bar._btn_skip_fwd.animateClick)
+        self._shortcuts.append(sc_right)
+
+        # 상하 방향키 (배속 제어)
+        sc_up = QShortcut(QKeySequence(Qt.Key.Key_Up), self)
+        sc_up.activated.connect(lambda: self._player.cycle_speed_up() if self._player and self._is_loaded else None)
+        self._shortcuts.append(sc_up)
+
+        sc_down = QShortcut(QKeySequence(Qt.Key.Key_Down), self)
+        sc_down.activated.connect(lambda: self._player.cycle_speed_down() if self._player and self._is_loaded else None)
+        self._shortcuts.append(sc_down)
+
+        # Home / End
+        sc_home = QShortcut(QKeySequence(Qt.Key.Key_Home), self)
+        sc_home.activated.connect(lambda: self._on_seek(0) if self._player and self._is_loaded else None)
+        self._shortcuts.append(sc_home)
+
+        def _seek_end():
+            if self._player and self._is_loaded:
+                duration = self._player.get_duration()
+                if duration > 0:
+                    self._on_seek(duration - 1)
+        sc_end = QShortcut(QKeySequence(Qt.Key.Key_End), self)
+        sc_end.activated.connect(_seek_end)
+        self._shortcuts.append(sc_end)
+
+        # 전체화면 토글
+        def _toggle_fs():
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+        sc_f = QShortcut(QKeySequence(Qt.Key.Key_F), self)
+        sc_f.activated.connect(_toggle_fs)
+        self._shortcuts.append(sc_f)
+
+        sc_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        sc_esc.activated.connect(lambda: self.showNormal() if self.isFullScreen() else None)
+        self._shortcuts.append(sc_esc)
+
+        # 폴더 열기
+        sc_o = QShortcut(QKeySequence(Qt.Key.Key_O), self)
+        sc_o.activated.connect(self._on_open_folder)
+        self._shortcuts.append(sc_o)
 
     # ========== 폴더 로드 ==========
 
     def _on_open_folder(self):
         """폴더 열기 다이얼로그"""
+        last_path = self._settings.value("last_folder", "")
         folder = QFileDialog.getExistingDirectory(
-            self, "홈캠 녹화 폴더 선택", "",
+            self, "홈캠 녹화 폴더 선택", last_path,
             QFileDialog.Option.ShowDirsOnly
         )
         if folder:
+            self._settings.setValue("last_folder", folder)
             self._load_folder(folder)
 
     def _load_folder(self, folder_path: str):
@@ -195,8 +229,7 @@ class MainWindow(QMainWindow):
             # 컨트롤 바에 손상된 파일 수 전달
             self._control_bar.set_corrupted_count(len(skipped))
 
-            # 환영 화면 숨기고 UI 전환
-            self._welcome_widget.hide()
+            # UI 전환
             self._info_bar.show()
             self._control_bar.show()
 
@@ -206,6 +239,11 @@ class MainWindow(QMainWindow):
 
             wid = int(self._video_frame.winId())
             self._player = PlayerEngine(wid, self)
+
+            # 저장된 볼륨 적용
+            saved_volume = self._settings.value("volume", 50, type=int)
+            self._player.set_volume(saved_volume)
+            self._control_bar.set_volume(saved_volume)
 
             # 시그널 연결
             self._player.position_changed.connect(self._on_position_changed)
@@ -293,7 +331,8 @@ class MainWindow(QMainWindow):
 
     def _on_file_changed(self, filename: str):
         """현재 재생 파일 변경"""
-        self._file_info_label.setText(f"📹 {filename}")
+        # 상단 파일명 표시 제거 (사용자 요청)
+        pass
 
     def _on_speed_updated(self, speed: float):
         """배속 변경됨"""
@@ -334,7 +373,8 @@ class MainWindow(QMainWindow):
             self._player.seek_relative(-seconds)
 
     def _on_volume_changed(self, volume: int):
-        """볼륨 변경"""
+        """볼륨 변경 (메모리 기능 추가)"""
+        self._settings.setValue("volume", volume)
         if self._player:
             self._player.set_volume(volume)
 
@@ -387,45 +427,19 @@ class MainWindow(QMainWindow):
         """주기적 UI 업데이트"""
         pass  # 현재 position_changed 시그널로 처리
 
-    # ========== 키보드 이벤트 ==========
+    def showEvent(self, event: QShowEvent):
+        """창이 표시될 때 첫 실행 처리"""
+        super().showEvent(event)
+        if self._first_show:
+            self._first_show = False
+            # 초기 폴더가 지정되지 않았다면 폴더 선택창을 띄우거나 마지막 폴더 로드 질문
+            if not self._is_loaded:
+                QTimer.singleShot(100, self._on_first_launch)
 
-    def keyPressEvent(self, event: QKeyEvent):
-        """키보드 단축키 처리"""
-        if not self._player or not self._is_loaded:
-            super().keyPressEvent(event)
-            return
-
-        key = event.key()
-
-        if key == Qt.Key.Key_Space:
-            self._on_play_pause()
-        elif key == Qt.Key.Key_Left:
-            self._on_skip_backward(10)
-        elif key == Qt.Key.Key_Right:
-            self._on_skip_forward(10)
-        elif key == Qt.Key.Key_Up:
-            self._player.cycle_speed_up()
-        elif key == Qt.Key.Key_Down:
-            self._player.cycle_speed_down()
-        elif key == Qt.Key.Key_Home:
-            self._on_seek(0)
-        elif key == Qt.Key.Key_End:
-            duration = self._player.get_duration()
-            if duration > 0:
-                self._on_seek(duration - 1)
-        elif key == Qt.Key.Key_F:
-            # 전체화면 토글
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
-        elif key == Qt.Key.Key_Escape:
-            if self.isFullScreen():
-                self.showNormal()
-        elif key == Qt.Key.Key_O:
-            self._on_open_folder()
-        else:
-            super().keyPressEvent(event)
+    def _on_first_launch(self):
+        """앱 시작 시 항상 폴더 선택 창 띄우기"""
+        # 마지막으로 선택했던 폴더가 있다면 그 위치를 기본값으로 하여 선택 창을 띄움
+        self._on_open_folder()
 
     # ========== 드래그 앤 드롭 ==========
 
@@ -446,10 +460,8 @@ class MainWindow(QMainWindow):
     # ========== 리사이즈 ==========
 
     def resizeEvent(self, event):
-        """리사이즈 시 환영 화면 크기 조정"""
+        """리사이즈 처리"""
         super().resizeEvent(event)
-        if hasattr(self, '_welcome_widget') and self._welcome_widget.isVisible():
-            self._welcome_widget.setGeometry(self._video_frame.rect())
 
     # ========== 종료 ==========
 
