@@ -36,6 +36,15 @@ class MainWindow(QMainWindow):
         self._first_show = True
         self._was_playing_before_drag = False
 
+        # Seek 스로틀링 관련
+        self._seek_timer = QTimer(self)
+        self._seek_timer.setInterval(16) # 드래그 스크럽 체감 향상을 위한 고주기 처리
+        self._seek_timer.setSingleShot(True)
+        self._seek_timer.timeout.connect(self._execute_seek)
+        self._pending_seek_pos = None
+        self._pending_seek_should_play = None
+        self._pending_seek_precise = None
+
         self._setup_ui()
         self._load_stylesheet()
         self._setup_shortcuts()
@@ -283,7 +292,11 @@ class MainWindow(QMainWindow):
 
             # 플레이리스트 로드
             self._player.load_playlist(files)
+            self._player.segment_end_reached.connect(self._on_segment_end_reached)
             self._is_loaded = True
+
+            # 첫 번째 파일 로드
+            self._player.load_file_index(0)
 
             # 시간 매핑 구성 (선택된 파일들 기준)
             if self._timeline_mgr.build_time_map(gap_threshold=20.0):
@@ -341,26 +354,20 @@ class MainWindow(QMainWindow):
     # ========== 플레이어 이벤트 핸들러 ==========
 
     def _on_position_changed(self, position: float):
-        """재생 위치 변경 (mpv 시간 → 실제 시간 변환)"""
+        """재생 위치 변경 (개별 파일 위치 → 전체 타임라인 오프셋 변환)"""
         tmgr = self._timeline_mgr
-        if tmgr.has_time_map() and self._mpv_total_duration > 0:
-            real_offset = tmgr.mpv_to_real_offset(position, self._mpv_total_duration)
-            clock_str = tmgr.offset_to_clock_time_str(real_offset)
-            self._control_bar.update_position(real_offset, clock_str)
+        if tmgr.has_time_map():
+            current_idx = self._player.get_current_index()
+            if current_idx >= 0:
+                real_offset = tmgr.get_real_offset(current_idx, position)
+                clock_str = tmgr.offset_to_clock_time_str(real_offset)
+                self._control_bar.update_position(real_offset, clock_str)
         else:
             self._control_bar.update_position(position)
 
     def _on_duration_changed(self, duration: float):
-        """전체 시간 변경 (mpv 보고)"""
-        self._mpv_total_duration = duration
-        tmgr = self._timeline_mgr
-        if tmgr.has_time_map():
-            # 실제 시간 기반 duration 사용
-            real_dur = tmgr.get_real_total_duration()
-            end_clock = tmgr.offset_to_clock_time_str(real_dur)
-            self._control_bar.update_duration(real_dur, end_clock)
-        else:
-            self._control_bar.update_duration(duration)
+        """현재 파일의 재생 시간 변경 시 호출 (UI에 영향 주지 않음)"""
+        pass
 
     def _on_file_changed(self, filename: str):
         """현재 재생 파일 변경"""
@@ -381,14 +388,53 @@ class MainWindow(QMainWindow):
             self._control_bar.update_play_button(not self._player.is_paused())
 
     def _on_seek(self, position: float):
-        """시크 요청 (실제 시간 → mpv 시간 변환)"""
+        """시크 요청 (스로틀링 적용)"""
         if self._player and self._is_loaded:
-            tmgr = self._timeline_mgr
-            if tmgr.has_time_map() and self._mpv_total_duration > 0:
-                mpv_pos = tmgr.real_offset_to_mpv(position, self._mpv_total_duration)
-                self._player.seek(mpv_pos)
+            self._pending_seek_pos = position
+            is_dragging = self._control_bar.get_seek_bar().is_dragging()
+            if is_dragging:
+                self._pending_seek_should_play = False
+                self._pending_seek_precise = False
             else:
-                self._player.seek(position)
+                self._pending_seek_should_play = not self._player.is_paused()
+                self._pending_seek_precise = True
+            if not self._seek_timer.isActive():
+                self._execute_seek()
+                self._seek_timer.start()
+
+    def _execute_seek(self):
+        """실제 시크 수행 (파일 인덱스 계산 및 로딩 포함)"""
+        if self._pending_seek_pos is None or not self._player:
+            return
+            
+        position = self._pending_seek_pos
+        should_play = self._pending_seek_should_play
+        seek_precise = self._pending_seek_precise
+        self._pending_seek_pos = None
+        self._pending_seek_should_play = None
+        self._pending_seek_precise = None
+
+        if should_play is None:
+            should_play = not self._player.is_paused()
+        if seek_precise is None:
+            seek_precise = True
+        
+        tmgr = self._timeline_mgr
+        if tmgr.has_time_map():
+            idx, offset = tmgr.get_index_and_offset(position)
+            
+            # 현재 파일과 다르면 새로 로드, 같으면 시크만 수행
+            if idx != self._player.get_current_index():
+                self._player.load_file_index(
+                    idx,
+                    offset,
+                    should_play=should_play,
+                    precise_seek=seek_precise,
+                )
+            else:
+                self._player.seek(offset, precise=seek_precise)
+        else:
+            self._player.seek(position, precise=seek_precise)
 
     def _on_speed_changed(self, speed: float):
         """배속 변경"""
@@ -396,14 +442,30 @@ class MainWindow(QMainWindow):
             self._player.set_speed(speed)
 
     def _on_skip_forward(self, seconds: float):
-        """앞으로 건너뛰기"""
+        """앞으로 건너뛰기 (현재 파일 내에서 이동)"""
         if self._player and self._is_loaded:
             self._player.seek_relative(seconds)
 
     def _on_skip_backward(self, seconds: float):
-        """뒤로 건너뛰기"""
+        """뒤로 건너뛰기 (현재 파일 내에서 이동)"""
         if self._player and self._is_loaded:
             self._player.seek_relative(-seconds)
+
+    def _on_segment_end_reached(self):
+        """현재 파일 재생이 끝났을 때 다음 파일로 자동 전환"""
+        if not self._player or not self._is_loaded:
+            return
+            
+        current_idx = self._player.get_current_index()
+        next_idx = current_idx + 1
+        
+        if next_idx < self._timeline_mgr.get_file_count():
+            # 다음 파일 로드 (0초부터 재생)
+            self._player.load_file_index(next_idx, 0.0, should_play=True)
+            self._control_bar.update_play_button(True)
+        else:
+            self._status_bar.showMessage("모든 영상 재생이 완료되었습니다.")
+            self._control_bar.update_play_button(False)
 
     def _on_volume_changed(self, volume: int):
         """볼륨 변경 (메모리 기능 추가)"""
@@ -420,10 +482,19 @@ class MainWindow(QMainWindow):
                 self._control_bar.update_play_button(False)
 
     def _on_seek_drag_finished(self):
-        """드래그 완료 시 무조건 재생 시작"""
+        """드래그 완료 시 최종 위치 시크 (재생 상태는 PlayerEngine이 관리)"""
         if self._player and self._is_loaded:
-            self._player.play()
-            self._control_bar.update_play_button(True)
+            seek_bar = self._control_bar.get_seek_bar()
+            self._pending_seek_pos = seek_bar.get_current_seconds()
+            self._pending_seek_should_play = self._was_playing_before_drag
+            self._pending_seek_precise = True
+            self._execute_seek()
+
+            if self._was_playing_before_drag and self._player.is_paused():
+                self._player.play()
+                self._control_bar.update_play_button(True)
+
+            self._was_playing_before_drag = False
 
     def _show_corrupted_files_dialog(self):
         """손상된 파일 목록을 보여주는 다이얼로그"""

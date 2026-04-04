@@ -28,6 +28,7 @@ class SeekBar(QSlider):
         self._duration = 0.0
         self._is_dragging = False
         self._hover_enabled = True
+        self._suppress_slider_signals = False
 
         # 갭 시각화 관련
         self._gap_regions: list[dict] = []  # [{'start': 0.25, 'end': 0.5, 'duration': 1800}, ...]
@@ -85,7 +86,9 @@ class SeekBar(QSlider):
             self._is_dragging = True
             seconds = self._value_to_seconds(value)
             self.seek_requested.emit(seconds)
+            self._suppress_slider_signals = True
         super().mousePressEvent(event)
+        self._suppress_slider_signals = False
 
     def mouseMoveEvent(self, event: QMouseEvent):
         """마우스 이동 시 시간 툴팁 표시 (갭 정보 포함)"""
@@ -122,8 +125,10 @@ class SeekBar(QSlider):
             self.setValue(value)
             seconds = self._value_to_seconds(value)
             self.seek_requested.emit(seconds)
+            self._suppress_slider_signals = True
 
         super().mouseMoveEvent(event)
+        self._suppress_slider_signals = False
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         """드래그 끝 → 시크 실행"""
@@ -132,25 +137,38 @@ class SeekBar(QSlider):
             seconds = self._value_to_seconds(self.value())
             self.seek_requested.emit(seconds)
             self.drag_finished.emit()
+            self._suppress_slider_signals = True
         super().mouseReleaseEvent(event)
+        self._suppress_slider_signals = False
 
     def _on_slider_pressed(self):
+        if self._suppress_slider_signals:
+            return
         self._is_dragging = True
         self.drag_started.emit()
 
     def _on_slider_released(self):
+        if self._suppress_slider_signals:
+            return
         self._is_dragging = False
         seconds = self._value_to_seconds(self.value())
         self.seek_requested.emit(seconds)
         self.drag_finished.emit()
+
     def _on_slider_moved(self, value: int):
         """드래그 중 실시간 영상 탐색"""
+        if self._suppress_slider_signals:
+            return
         if self._is_dragging:
             seconds = self._value_to_seconds(value)
             self.seek_requested.emit(seconds)
 
     def is_dragging(self) -> bool:
         return self._is_dragging
+
+    def get_current_seconds(self) -> float:
+        """현재 슬라이더 값을 초 단위로 반환"""
+        return self._value_to_seconds(self.value())
 
     # ========== 갭 시각화 ==========
 

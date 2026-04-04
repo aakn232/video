@@ -8,6 +8,7 @@ import struct
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
+import bisect
 from natsort import natsorted
 
 
@@ -85,6 +86,8 @@ class TimelineManager:
         # 시간 매핑 관련
         self._segments: list[FileSegment] = []
         self._gaps: list[TimeGap] = []
+        self._segment_offsets: list[float] = []
+        self._gap_starts: list[float] = []
         self._first_timestamp: int = 0
         self._real_total_duration: float = 0.0
         self._has_time_map: bool = False
@@ -377,6 +380,11 @@ class TimelineManager:
 
         self._real_total_duration = prev_end_offset
         self._has_time_map = True
+
+        # 이진 탐색 최적화를 위한 오프셋 목록 생성
+        self._segment_offsets = [seg.real_offset for seg in self._segments]
+        self._gap_starts = [gap.real_start for gap in self._gaps]
+
         return True
 
     def has_time_map(self) -> bool:
@@ -415,43 +423,44 @@ class TimelineManager:
             for gap in self._gaps
         ]
 
+    def get_index_and_offset(self, real_offset: float) -> tuple[int, float]:
+        """실제 시간 오프셋 → (파일 인덱스, 파일 내 오프셋) 변환"""
+        if not self._has_time_map or not self._segments:
+            return 0, 0.0
+
+        # 갭인 경우 다음 유효 오프셋으로 스냅
+        real_offset = self.find_nearest_valid_offset(real_offset)
+
+        # 이진 탐색으로 해당 오프셋이 속한 세그먼트 찾기
+        idx = bisect.bisect_right(self._segment_offsets, real_offset) - 1
+        idx = max(0, min(idx, len(self._segments) - 1))
+        
+        seg = self._segments[idx]
+        offset_in_file = max(0.0, real_offset - seg.real_offset)
+        
+        return seg.file_index, offset_in_file
+
+    def get_real_offset(self, file_index: int, pos_in_file: float) -> float:
+        """(파일 인덱스, 파일 내 오프셋) → 실제 시간 오프셋 변환"""
+        if not self._has_time_map or not self._segments:
+            return pos_in_file
+            
+        # 인덱스 유효성 확인
+        if 0 <= file_index < len(self._segments):
+            return self._segments[file_index].real_offset + pos_in_file
+        
+        # 유효하지 않으면 마지막 유효 오프셋 또는 0 반환
+        return pos_in_file
+
     def mpv_to_real_offset(self, mpv_seconds: float, mpv_total_duration: float) -> float:
-        """mpv 재생 위치 → 실제 시간 오프셋 변환"""
-        if not self._has_time_map or not self._segments or mpv_total_duration <= 0:
-            return mpv_seconds
-        n = len(self._segments)
-        avg = mpv_total_duration / n
-        idx = max(0, min(int(mpv_seconds / avg), n - 1))
-        offset_in_file = max(0.0, mpv_seconds - idx * avg)
-        return self._segments[idx].real_offset + offset_in_file
+        """구버전 호환용 (사용 자제)"""
+        return mpv_seconds # 이제 mpv_seconds가 실제 파일 내 위치이므로 상위에서 처리 권장
 
     def real_offset_to_mpv(self, real_offset: float, mpv_total_duration: float) -> float:
-        """실제 시간 오프셋 → mpv 재생 위치 변환 (갭이면 갭 다음 세그먼트로 스냅)"""
-        if not self._has_time_map or not self._segments or mpv_total_duration <= 0:
-            return real_offset
+        """구버전 호환용 (사용 자제)"""
+        _, offset = self.get_index_and_offset(real_offset)
+        return offset
 
-        n = len(self._segments)
-        avg = mpv_total_duration / n
-
-        # 갭 영역인지 확인 → 갭 이후 세그먼트로 스냅
-        for gap in self._gaps:
-            if gap.real_start <= real_offset < gap.real_end:
-                for seg in self._segments:
-                    if seg.real_offset >= gap.real_end:
-                        real_offset = seg.real_offset
-                        break
-                break
-
-        # 해당 real_offset에 가장 가까운 세그먼트 찾기
-        target_idx = 0
-        for i, seg in enumerate(self._segments):
-            if seg.real_offset <= real_offset:
-                target_idx = i
-            else:
-                break
-
-        offset_in_file = max(0.0, real_offset - self._segments[target_idx].real_offset)
-        return target_idx * avg + offset_in_file
 
     def offset_to_clock_time_str(self, real_offset: float) -> str:
         """실제 시간 오프셋 → 시계 시간 문자열 (HH:MM:SS, 24시간제)"""
