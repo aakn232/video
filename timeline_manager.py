@@ -62,6 +62,7 @@ class FileSegment:
     unix_timestamp: int
     real_offset: float      # 첫 파일 타임스탬프 기준 경과 초
     file_index: int          # 정렬된 파일 목록 내 인덱스
+    duration: float = 60.0    # 파일의 실제/예상 길이
 
 
 @dataclass
@@ -134,6 +135,104 @@ class TimelineManager:
 
         if not valid_files:
             raise ValueError(f"유효한 MP4 파일을 찾을 수 없습니다: {folder_path}")
+
+        self._files = valid_files
+        return self._files
+
+    def fast_scan_all_segments(self, root_path: str) -> set:
+        """
+        초고속 파일 스캔: 모든 MP4 파일명을 읽고 타임스탬프만 추출하여 
+        다이얼로그 시각화용 세그먼트 생성. (파일 유효성 검사 안 함)
+        반환: 데이터가 있는 날짜 목록(set)
+        """
+        self._folder_path = root_path
+        self._segments = []
+        root = Path(root_path)
+        if not root.exists():
+            return set()
+
+        dates = set()
+        mp4_files = []
+        for p in root.glob("**/[0-9]*/*.mp4"):
+            # 파일명 규칙: MMmSSs_TIMESTAMP.mp4
+            fname = p.stem
+            parts = fname.split('_')
+            if len(parts) >= 2 and parts[1].isdigit():
+                ts = int(parts[1])
+                dt = datetime.fromtimestamp(ts)
+                dates.add(dt.date())
+                
+                # 시각화용 임시 세그먼트 (validation=False)
+                self._segments.append(FileSegment(
+                    file_path=str(p),
+                    unix_timestamp=ts,
+                    real_offset=0.0, # 나중에 정밀 스캔 시 계산
+                    file_index=0,
+                    duration=60.0
+                ))
+
+        # 시간순 정렬 (타임라인 전 구간 시각화용)
+        self._segments.sort(key=lambda x: x.unix_timestamp)
+        return dates
+
+    def scan_range(self, start_dt: datetime, end_dt: datetime, progress_callback=None) -> list[str]:
+        """
+        선택한 시간 범위에 해당하는 파일만 정밀 스캔하여 로드.
+        """
+        if not self._folder_path:
+            return []
+
+        start_ts = int(start_dt.timestamp())
+        end_ts = int(end_dt.timestamp())
+        
+        root = Path(self._folder_path)
+        mp4_files = []
+        
+        # 하위 폴더들을 순회하며 범위에 해당하는 폴더만 진입
+        for p in root.glob("**/[0-9]*"):
+            if not p.is_dir() or len(p.name) != 10:
+                continue
+            
+            # 폴더명(YYYYMMDDHH)을 시간 범위로 해석
+            try:
+                p_start_dt = datetime.strptime(p.name, "%Y%m%d%H")
+                p_start_ts = int(p_start_dt.timestamp())
+                p_end_ts = p_start_ts + 3600
+                
+                # 폴더의 시간 범위가 요청 범위와 겹치는지 확인
+                if p_end_ts < start_ts or p_start_ts > end_ts:
+                    continue
+                
+                # 겹치는 폴더 내의 MP4 파일 수집
+                for f in p.glob("*.mp4"):
+                    # 파일명에서 타임스탬프 추출 시도 (최적화: 정규식 없이 간단히 체크)
+                    # MMmSSs_TIMESTAMP.mp4
+                    fname = f.stem
+                    parts = fname.split('_')
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        f_ts = int(parts[1])
+                        # 파일 타임스탬프가 범위 내에 있는지 확인 (1분 분량 고려)
+                        if (f_ts + 60) >= start_ts and f_ts <= end_ts:
+                            mp4_files.append(str(f))
+            except ValueError:
+                continue
+
+        if not mp4_files:
+            return []
+
+        # 정렬 및 검증 (기존 로직 재사용)
+        sorted_files = natsorted(mp4_files)
+        valid_files = []
+        total = len(sorted_files)
+        self._skipped_files = []
+        
+        for i, fpath in enumerate(sorted_files):
+            if is_valid_mp4(fpath):
+                valid_files.append(fpath)
+            else:
+                self._skipped_files.append(fpath)
+            if progress_callback:
+                progress_callback(i + 1, total)
 
         self._files = valid_files
         return self._files
@@ -360,6 +459,75 @@ class TimelineManager:
             return format_time(real_offset)
         ts = self._first_timestamp + real_offset
         return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+
+    def get_available_dates(self) -> set:
+        """데이터가 존재하는 모든 날짜(date 객체) 반환"""
+        dates = set()
+        for seg in self._segments:
+            dt = datetime.fromtimestamp(seg.unix_timestamp)
+            dates.add(dt.date())
+        return dates
+
+    def get_all_segments(self) -> list[FileSegment]:
+        """전체 세그먼트 반환 (날짜 구분 없이 스크롤 렌더링용)"""
+        return self._segments
+
+    def get_merged_segments(self, threshold_sec: float = 3.0) -> list[tuple[int, float]]:
+        """
+        타임라인 시각화용: 인접한 세그먼트 사이의 간격이 threshold 이내면 하나로 합쳐서 반환.
+        반환: [(start_ts, total_duration), ...]
+        """
+        if not self._segments:
+            return []
+            
+        merged = []
+        current_start_ts = self._segments[0].unix_timestamp
+        current_end_ts = current_start_ts + self._segments[0].duration
+        
+        for i in range(1, len(self._segments)):
+            seg = self._segments[i]
+            # 이전 세그먼트 끝과 현재 세그먼트 시작 사이의 간격 확인
+            gap = seg.unix_timestamp - current_end_ts
+            
+            if gap <= threshold_sec:
+                # 3초 이내라면 확장
+                current_end_ts = seg.unix_timestamp + seg.duration
+            else:
+                # 3초 초과라면 이전 블록 마감하고 새 블록 시작
+                merged.append((current_start_ts, current_end_ts - current_start_ts))
+                current_start_ts = seg.unix_timestamp
+                current_end_ts = current_start_ts + seg.duration
+        
+        # 마지막 블록 추가
+        merged.append((current_start_ts, current_end_ts - current_start_ts))
+        return merged
+
+    def get_segments_for_date(self, target_date) -> list[FileSegment]:
+        """특정 날짜의 세그먼트들만 반환"""
+        return [
+            seg for seg in self._segments
+            if datetime.fromtimestamp(seg.unix_timestamp).date() == target_date
+        ]
+
+    def datetime_to_real_offset(self, dt: datetime) -> float:
+        """datetime 객체 → real_offset 변환. 데이터 시작점 이전이면 0 반환."""
+        target_ts = dt.timestamp()
+        if target_ts < self._first_timestamp:
+            return 0.0
+        return float(target_ts - self._first_timestamp)
+
+    def find_nearest_valid_offset(self, real_offset: float) -> float:
+        """주어진 offset이 갭에 해당하면, 다음 유효한 세그먼트 시작점으로 반환 (스냅)"""
+        if not self._segments:
+            return real_offset
+            
+        # 오프셋 순으로 정렬되어 있으므로 이진 탐색 가능하지만, 리스트가 크지 않으므로 순회
+        for seg in self._segments:
+            if seg.real_offset >= real_offset:
+                return seg.real_offset
+        
+        # 마지막 세그먼트보다 뒤라면 마지막 세그먼트 반환
+        return self._segments[-1].real_offset
 
 
 def format_time(seconds: float) -> str:

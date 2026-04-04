@@ -16,6 +16,7 @@ from PyQt6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QFont, QShowEven
 from player_engine import PlayerEngine
 from timeline_manager import TimelineManager, format_time
 from ui.control_bar import ControlBar
+from ui.datetime_dialog import DateTimeSelectorDialog
 
 
 class MainWindow(QMainWindow):
@@ -210,27 +211,49 @@ class MainWindow(QMainWindow):
             self._load_folder(folder)
 
     def _load_folder(self, folder_path: str):
-        """폴더 로드 및 재생 시작"""
+        """폴더 로드 및 재생 시작 (초고속 전구간 스캔 버전)"""
         try:
-            self._status_bar.showMessage(f"폴더 스캔 중: {folder_path}")
+            # 1단계: 가벼운 스캔 (모든 파일명을 읽어 시각화 데이터 준비)
+            self._status_bar.showMessage(f"녹화 데이터 전체 인덱싱 중: {folder_path}")
+            QApplication.processEvents()
+            
+            # 폴더명이 아닌 모든 파일명을 고속 스캔하여 세그먼트 생성
+            available_dates = self._timeline_mgr.fast_scan_all_segments(folder_path)
+            
+            if not available_dates:
+                self._status_bar.showMessage("데이터가 있는 폴더를 찾을 수 없습니다.")
+                return
+
+            # 2단계: 날짜/시간 구간 선택 다이얼로그
+            dialog = DateTimeSelectorDialog(self._timeline_mgr, available_dates, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self._status_bar.showMessage("로딩이 취소되었습니다.")
+                return
+
+            start_dt, end_dt = dialog.get_selected_range()
+            
+            # 3단계: 선택된 구간만 정밀 스캔
+            self._status_bar.showMessage(f"데이터 정밀 로딩 중...")
             QApplication.processEvents()
 
             def on_progress(current, total):
-                self._status_bar.showMessage(
-                    f"파일 검증 중: {current}/{total}"
-                )
+                self._status_bar.showMessage(f"파일 정밀 검증 중: {current}/{total}")
                 QApplication.processEvents()
 
-            files = self._timeline_mgr.scan_directory(
-                folder_path, progress_callback=on_progress
-            )
+            files = self._timeline_mgr.scan_range(start_dt, end_dt, progress_callback=on_progress)
+            
+            if not files:
+                self._status_bar.showMessage("선택한 구간에 유효한 영상이 없습니다.")
+                return
+
             file_count = self._timeline_mgr.get_file_count()
+            # 예상 길이는 정밀 스캔된 파일 수 기준
             est_duration = self._timeline_mgr.get_estimated_duration_str()
             skipped = self._timeline_mgr.get_skipped_files()
 
             skip_msg = f" (손상 {len(skipped)}개)" if skipped else ""
             self._status_bar.showMessage(
-                f"{file_count}개 파일 로드됨{skip_msg} | 예상 길이: {est_duration}"
+                f"{file_count}개 파일 로드됨{skip_msg} | 선택 구간: {est_duration}"
             )
 
             # 컨트롤 바에 손상된 파일 수 전달
@@ -262,7 +285,7 @@ class MainWindow(QMainWindow):
             self._player.load_playlist(files)
             self._is_loaded = True
 
-            # 시간 매핑 구성 (갭 감지)
+            # 시간 매핑 구성 (선택된 파일들 기준)
             if self._timeline_mgr.build_time_map(gap_threshold=20.0):
                 self._setup_real_time_mode()
 
@@ -272,10 +295,13 @@ class MainWindow(QMainWindow):
             # 재생 버튼 상태 업데이트
             self._control_bar.update_play_button(True)
             self._stats_label.setText(
-                f"파일: {file_count}개{skip_msg} | 예상: {est_duration}"
+                f"파일: {file_count}개{skip_msg} | 선택 구간: {est_duration}"
             )
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._status_bar.showMessage(f"오류: {str(e)}")
             self._status_bar.showMessage(f"오류: {str(e)}")
 
     def _setup_real_time_mode(self):
